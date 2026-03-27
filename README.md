@@ -1,9 +1,8 @@
 # notion-bridge
 
-> **WARNING: This package was vibe coded with Claude and is provided as-is.
-> It interacts with your Notion workspace via the API -- use it at your own
-> risk.  There may be bugs that lose data, mangle formatting, or behave
-> unexpectedly.  Always keep backups of important Notion pages.**
+> **WARNING: This package was vibe coded with Claude. I tested it very lightly, but don't come complain if it eats some of your notion pages**
+
+> **WARNING: I'm not going to care about backwards compatibility here. Things can and will change as I see fit**
 
 ## What it does
 
