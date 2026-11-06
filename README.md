@@ -104,18 +104,40 @@ notion-bridge-mode buffers.
   read the comment text.  A full comments section is appended at the bottom of
   the buffer.  You can post new comments or reply to threads with
   `notion-bridge-comment`.
-- **Parallel API calls** -- block-level comment fetching and bulk block
-  deletion use parallel curl processes batched in groups of 3 to stay within
-  Notion's rate limits.
-- **Conflict detection** -- push checks whether the remote page changed since
-  your last pull and warns before overwriting.
-- **Sidecar cache** -- block IDs, hashes, and comment data are persisted in
-  `~/.emacs.d/.cache/notion-bridge/` so that the mode can restore state when
-  reopening files.
+- **Incremental push** -- push diffs the buffer against what you pulled and
+  only edits, inserts, or deletes the blocks you changed.  Everything else in
+  the page, including mentions, colors and comments on untouched blocks, is
+  left exactly as it is.
+- **Conflict detection** -- before writing, push re-reads the page and checks
+  every block it is about to touch.  Blocks changed in Notion since your pull
+  are listed and only overwritten if you confirm; changes elsewhere on the
+  page are preserved.
+- **Sidecar cache** -- the pulled block tree and comment data are persisted in
+  `~/.emacs.d/.cache/notion-bridge/` so that conflict detection and comment
+  overlays work after reopening files.
+
+## Safety
+
+- **Pages and databases are never deleted.**  DELETE requests for pages are
+  refused outright, and so is deleting any block that is or contains a
+  subpage, an inline database, or a synced block (deleting those in Notion
+  trashes the page or breaks every copy).
+- **Writes are confined to the open page.**  Every write is checked against
+  the page you are pushing and the blocks fetched from it; anything else is
+  refused before a request is made.  Nothing is written outside a push or a
+  comment on the open page.
+- **Nothing is written until the plan is checked.**  Push computes all edits,
+  validates them against Notion, shows a summary (listing every deletion) and
+  asks before writing.  If a write fails midway, the record of what succeeded
+  is kept, so pushing again continues without duplicating content.
+- **Local edits are not discarded silently.**  Pull, refresh and pull-all
+  ask (or skip the file) when a buffer has unsaved or unpushed changes.
+- **The token stays off the command line**: curl reads it from a private
+  temporary config file, and request bodies are sent on stdin.
 
 ## File format
 
-Pulled org files contain standard org-mode content plus two special keywords:
+Pulled org files contain standard org-mode content plus these keywords:
 
 ```org
 #+TITLE: My Page
@@ -124,8 +146,22 @@ Pulled org files contain standard org-mode content plus two special keywords:
 ```
 
 - `NOTION_PAGE_ID` links the buffer to a Notion page.
-- `NOTION_LAST_SYNCED` records when the page was last pulled for conflict
-  detection.
+- `NOTION_LAST_SYNCED` records when the page was last synced (informational;
+  conflict detection uses the cached block tree).
+
+Blocks that can't be edited as org (subpages, databases, images, callouts,
+embeds, columns, toggle headings, ...) appear as read-only placeholders:
+
+```org
+#+NOTION_BLOCK: 1a2b3c... child_page Meeting notes
+# [[notion:1a2b3c...][open subpage]]
+```
+
+Leave the line where it is to keep the block; remove it to delete the block
+(refused for subpages, databases and synced blocks).  The `#` lines are a
+preview and are not pushed.  Text that org would misread (a line starting
+with `* ` or `- `, stray `*`, `/` or `_`) is escaped with invisible
+zero-width spaces, which are stripped again on push.
 
 `notion-bridge-mode` activates automatically on any org buffer that contains a
 `NOTION_PAGE_ID` keyword.
@@ -134,10 +170,10 @@ Pulled org files contain standard org-mode content plus two special keywords:
 
 | File                     | Responsibility                                            |
 |--------------------------|-----------------------------------------------------------|
-| `notion-bridge-api.el`   | curl-based synchronous and parallel HTTP client for the Notion API.  Handles auth, rate-limit retries, pagination. |
+| `notion-bridge-api.el`   | curl-based HTTP client for the Notion API.  Handles auth, retries (honouring Retry-After), pagination, and the write scope that confines every write to the open page. |
 | `notion-bridge-org.el`   | Bidirectional conversion between Notion block JSON (plists) and org-mode text.  Handles rich text annotations, inline markup parsing, and all supported block types. |
 | `notion-bridge-cache.el` | Sidecar cache using readable elisp sexps.  Stores block ID mappings, content hashes, and serialized comments keyed by md5 of the org file path. |
-| `notion-bridge-sync.el`  | Orchestration layer: pull, push, pull-all, conflict detection, comment fetching/rendering, block-tracked insertion for overlay placement. |
+| `notion-bridge-sync.el`  | Orchestration layer: pull, diff-based push with validation and conflict detection, pull-all, comments. |
 | `notion-bridge.el`       | User-facing commands, minor mode, transient menu, eldoc integration. |
 
 ## Testing
@@ -151,13 +187,19 @@ make test
 Or directly:
 
 ```sh
-emacs -Q -batch -L . -l ert \
+emacs -Q -batch -L . -L test -l ert \
   -l test/notion-bridge-org-test.el \
+  -l test/notion-bridge-roundtrip-test.el \
   -l test/notion-bridge-api-test.el \
   -l test/notion-bridge-cache-test.el \
   -l test/notion-bridge-sync-test.el \
+  -l test/notion-bridge-push-test.el \
   -f ert-run-tests-batch-and-exit
 ```
+
+`test/notion-bridge-push-test.el` runs pull/edit/push scenarios end to end
+against an in-memory Notion (`test/notion-bridge-fake.el`); no test touches
+the network.
 
 Individual test suites:
 
@@ -170,17 +212,23 @@ make test-sync
 
 ## Known limitations
 
-- **Rate limits** -- Notion enforces 3 requests/second.  The parallel request
-  helper batches in groups of 3 with a short delay between batches, but
-  heavy use (large workspaces with many pages) can still hit 429 errors.
-- **Unsupported block types** -- some Notion block types (e.g. tables,
-  columns, synced blocks, databases inline) are not fully supported.  Unknown
-  types fall back to rendering their rich text content, if any.
+- **Rate limits** -- Notion enforces about 3 requests/second.  Comment
+  fetching is paced to match, and rate-limited requests are retried, but very
+  large workspaces make `pull-all` slow.
+- **Read-only blocks** -- blocks without an org equivalent are placeholders:
+  you can keep or remove them, not edit them.  Tables are editable, but an
+  edited table is replaced as a whole.
+- **Lossy edits** -- when you edit a block, formatting org can't express
+  (text colors, user and date mentions, inline equations) becomes plain text
+  in that block.  Untouched blocks keep everything.  Headings deeper than
+  level 3 become level 3 (Notion's maximum); TODO keywords, tags and org
+  comments stay local and are never sent.
+- **Inserting at the very top** -- Notion can only insert after an existing
+  block, so a new first block is added by recreating the old first block
+  after it; this fails (with a message) if that block is read-only.
 - **Comment positions** -- Notion comments are associated with blocks, not
   character ranges.  The overlay placement maps comments to the line where
   the block appears, but cannot highlight the specific text range the
   commenter selected in Notion.
 - **Large pages** -- pages with hundreds of blocks require many sequential API
   calls for recursive block fetching, which can be slow.
-- **Title property** -- the push command updates the page title from
-  `#+TITLE`, but only for the standard "title" property type.

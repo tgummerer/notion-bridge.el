@@ -40,10 +40,10 @@ even if the current buffer has one."
            (if (and id (not current-prefix-arg))
                id
              (read-string "Notion page ID: " id)))))
-  ;; If current buffer already has this page ID, refresh in-place
   (let ((current-id (or notion-bridge--page-id
                         (notion-bridge--read-page-id-from-buffer))))
-    (if (and current-id (equal current-id page-id))
+    (if (and current-id (equal (notion-bridge-api--norm current-id)
+                               (notion-bridge-api--norm page-id)))
         (notion-bridge-sync-refresh page-id)
       (notion-bridge-sync-pull page-id))))
 
@@ -111,7 +111,9 @@ Uses the page index to present titles for completion."
 
 ;;;###autoload
 (defun notion-bridge-link-buffer (page-id)
-  "Link the current org buffer to a Notion PAGE-ID."
+  "Link the current org buffer to a Notion PAGE-ID.
+Pushing a linked buffer only works if the page is still empty;
+otherwise pull the page instead."
   (interactive "sNotion page ID to link: ")
   (setq notion-bridge--page-id page-id)
   (notion-bridge-sync--update-keyword "NOTION_PAGE_ID" page-id)
@@ -124,10 +126,15 @@ Uses the page index to present titles for completion."
   (unless notion-bridge--page-id
     (setq notion-bridge--page-id (notion-bridge--read-page-id-from-buffer)))
   (if notion-bridge--page-id
-      (message "Notion page: %s | Last edited: %s | File: %s"
-               notion-bridge--page-id
-               (or notion-bridge--last-edited "unknown")
-               (or buffer-file-name "(unsaved)"))
+      (let ((base (notion-bridge-sync--load-base (notion-bridge-sync--cache-key)
+                                                 notion-bridge--page-id)))
+        (message "Notion page: %s | Synced: %s | %s | File: %s"
+                 notion-bridge--page-id
+                 (or (plist-get base :last-synced) "never (pull before pushing)")
+                 (cond ((null base) "no sync record")
+                       ((notion-bridge-sync-unpushed-changes) "unpushed changes")
+                       (t "nothing to push"))
+                 (or buffer-file-name "(unsaved)")))
     (message "No Notion page linked to this buffer")))
 
 ;;;###autoload
@@ -179,9 +186,6 @@ Confirms if the buffer has unsaved changes."
     (setq notion-bridge--page-id (notion-bridge--read-page-id-from-buffer)))
   (unless notion-bridge--page-id
     (user-error "No Notion page linked to this buffer"))
-  (when (and (buffer-modified-p)
-             (not (yes-or-no-p "Buffer has unsaved changes.  Refresh anyway? ")))
-    (user-error "Refresh aborted"))
   (notion-bridge-sync-refresh notion-bridge--page-id))
 
 (defun notion-bridge-set-token (token)
@@ -225,13 +229,6 @@ Saves the token to the first auth-source file so it persists."
     (when (re-search-forward "^#\\+NOTION_PAGE_ID:\\s-*\\(\\S-+\\)" nil t)
       (match-string-no-properties 1))))
 
-(defun notion-bridge--read-last-edited-from-buffer ()
-  "Read the NOTION_LAST_SYNCED keyword from the current buffer."
-  (save-excursion
-    (goto-char (point-min))
-    (when (re-search-forward "^#\\+NOTION_LAST_SYNCED:\\s-*\\(\\S-+\\)" nil t)
-      (match-string-no-properties 1))))
-
 (defun notion-bridge--eldoc-function (&rest _)
   "Show comment text in echo area when cursor is on a commented line."
   (cl-loop for ov in (overlays-in (line-beginning-position) (1+ (line-end-position)))
@@ -249,15 +246,12 @@ Shows comments in echo area via eldoc when cursor is on commented lines."
     ;; Restore buffer-local vars from file keywords if not already set
     (unless notion-bridge--page-id
       (setq notion-bridge--page-id (notion-bridge--read-page-id-from-buffer)))
-    (unless notion-bridge--last-edited
-      (setq notion-bridge--last-edited (notion-bridge--read-last-edited-from-buffer)))
-    ;; Restore comment overlays from cache
     (unless (cl-some (lambda (ov) (overlay-get ov 'notion-bridge-comment))
                      (overlays-in (point-min) (point-max)))
       (condition-case nil
           (notion-bridge-sync-restore-comments)
         (error nil)))
-    ;; Enable eldoc for comment display
+    (add-hook 'after-save-hook #'notion-bridge-sync--migrate-cache nil t)
     (add-hook 'eldoc-documentation-functions #'notion-bridge--eldoc-function nil t)
     (eldoc-mode 1)))
 

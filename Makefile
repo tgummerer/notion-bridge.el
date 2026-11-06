@@ -1,11 +1,13 @@
 EMACS ?= emacs
-LOAD_PATH = -L .
+LOAD_PATH = -L . -L test
 
 TEST_FILES = \
 	test/notion-bridge-cache-test.el \
 	test/notion-bridge-org-test.el \
+	test/notion-bridge-roundtrip-test.el \
 	test/notion-bridge-api-test.el \
-	test/notion-bridge-sync-test.el
+	test/notion-bridge-sync-test.el \
+	test/notion-bridge-push-test.el
 
 .PHONY: test test-cache test-org test-api test-sync clean
 

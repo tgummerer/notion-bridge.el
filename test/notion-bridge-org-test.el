@@ -280,11 +280,14 @@ EXTRA is additional plist entries to merge into the type data."
 ;;; ============================================================
 
 (ert-deftest notion-bridge-org-test-empty-paragraph ()
-  "Empty paragraph block converts to empty string."
+  "Empty paragraph renders as an invisible line so it survives a round trip."
   (let* ((block (list :type "paragraph" :paragraph (list :rich_text nil)))
          (result (notion-bridge-org--block-to-org block)))
-    (should (stringp result))
-    (should (equal result ""))))
+    (should (equal result "​"))
+    (let ((back (notion-bridge-org--org-to-blocks result)))
+      (should (= (length back) 1))
+      (should (equal (plist-get (car back) :type) "paragraph"))
+      (should (equal (length (plist-get (plist-get (car back) :paragraph) :rich_text)) 0)))))
 
 (ert-deftest notion-bridge-org-test-unicode-content ()
   "Unicode text passes through correctly."
@@ -384,21 +387,23 @@ EXTRA is additional plist entries to merge into the type data."
       (should (> (length (plist-get block :children)) 0)))))
 
 (ert-deftest notion-bridge-org-test-toggle-serializes ()
-  "Toggle block with children serializes to valid JSON."
+  "Toggle block serializes to valid JSON as sent to the API."
   (let* ((blocks (notion-bridge-org--org-to-blocks
                   "#+begin_details Title\nContent\n#+end_details\n"))
-         (body (list :children (vconcat blocks))))
+         (body (list :children (vconcat (mapcar #'notion-bridge-org--wire blocks)))))
     (should (stringp (json-serialize body :false-object :json-false)))))
 
 ;;; ============================================================
 ;;; Paragraph newline splitting
 ;;; ============================================================
 
-(ert-deftest notion-bridge-org-test-multiline-paragraph-splits ()
-  "Multiple lines without blank lines become separate paragraph blocks."
-  (let ((blocks (notion-bridge-org--org-to-blocks "Line one\nLine two\nLine three\n")))
-    (should (= (length blocks) 3))
-    (should (cl-every (lambda (b) (equal (plist-get b :type) "paragraph")) blocks))))
+(ert-deftest notion-bridge-org-test-multiline-paragraph-joins ()
+  "A filled paragraph is one block; only \\\\ line ends are hard breaks."
+  (let ((blocks (notion-bridge-org--org-to-blocks "Line one\nLine two\\\\\nLine three\n")))
+    (should (= (length blocks) 1))
+    (should (equal (notion-bridge-org--plain-text
+                    (plist-get (plist-get (car blocks) :paragraph) :rich_text))
+                   "Line one Line two\nLine three"))))
 
 (ert-deftest notion-bridge-org-test-blank-line-paragraphs ()
   "Paragraphs separated by blank lines are separate blocks."
@@ -431,7 +436,7 @@ EXTRA is additional plist entries to merge into the type data."
   "Nested lists serialize to valid JSON."
   (let* ((blocks (notion-bridge-org--org-to-blocks
                   "- [ ] Top\n  - [ ] Sub\n"))
-         (body (list :children (vconcat blocks))))
+         (body (list :children (vconcat (mapcar #'notion-bridge-org--wire blocks)))))
     (should (stringp (json-serialize body :false-object :json-false)))))
 
 ;;; ============================================================
@@ -587,13 +592,16 @@ EXTRA is additional plist entries to merge into the type data."
 ;;; ============================================================
 
 (ert-deftest notion-bridge-org-test-child-page-no-page-map ()
-  "child_page block without page-map renders as notion: link."
+  "child_page renders as a read-only placeholder linking to the subpage."
   (let* ((notion-bridge-org--page-map nil)
          (block (list :type "child_page"
                       :id "child-page-id"
                       :child_page (list :title "Sub Page")))
          (result (notion-bridge-org--block-to-org block)))
-    (should (equal result "- [[notion:child-page-id][Sub Page]]"))))
+    (should (equal result (concat "#+NOTION_BLOCK: child-page-id child_page Sub Page\n"
+                                  "# [[notion:child-page-id][open subpage]]")))
+    (should (equal (notion-bridge-org--org-to-blocks result)
+                   '((:type "notion_keep" :keep-id "child-page-id"))))))
 
 (ert-deftest notion-bridge-org-test-child-page-with-page-map ()
   "child_page block with page-map renders as file: link."
@@ -603,7 +611,8 @@ EXTRA is additional plist entries to merge into the type data."
                         :id "child-page-id"
                         :child_page (list :title "Sub Page")))
            (result (notion-bridge-org--block-to-org block)))
-      (should (equal result "- [[file:sub-page.org][Sub Page]]")))))
+      (should (equal result (concat "#+NOTION_BLOCK: child-page-id child_page Sub Page\n"
+                                    "# [[file:sub-page.org][open subpage]]"))))))
 
 (ert-deftest notion-bridge-org-test-child-page-no-title ()
   "child_page block with nil title renders as Untitled."

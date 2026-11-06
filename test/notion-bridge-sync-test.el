@@ -36,26 +36,6 @@
 ;;; Build cache from blocks
 ;;; ============================================================
 
-(ert-deftest notion-bridge-sync-test-build-cache ()
-  "Build cache from a list of Notion blocks."
-  (let* ((blocks (list (list :type "paragraph"
-                             :id "block-aaa"
-                             :paragraph (list :rich_text
-                                              (list (list :type "text"
-                                                         :text (list :content "Hello")
-                                                         :annotations (list :bold :json-false
-                                                                            :italic :json-false
-                                                                            :strikethrough :json-false
-                                                                            :underline :json-false
-                                                                            :code :json-false)))))))
-         (cache (notion-bridge-sync--build-cache-from-blocks "pg-1" "2026-01-01" blocks)))
-    (should (equal (plist-get cache :page-id) "pg-1"))
-    (should (equal (plist-get cache :last-edited) "2026-01-01"))
-    (let ((cache-blocks (plist-get cache :blocks)))
-      (should (= (length cache-blocks) 1))
-      (should (equal (plist-get (car cache-blocks) :notion-id) "block-aaa"))
-      (should (stringp (plist-get (car cache-blocks) :org-hash))))))
-
 ;;; ============================================================
 ;;; Keyword update
 ;;; ============================================================
@@ -81,20 +61,6 @@
 ;;; ============================================================
 ;;; Comment stripping
 ;;; ============================================================
-
-(ert-deftest notion-bridge-sync-test-strip-comments-section ()
-  "Strip the Comments :NOTION_COMMENTS: section from org text."
-  (let* ((org-text "#+TITLE: Test\n\nSome content\n* Comments                                                      :NOTION_COMMENTS:\n** Thread 1\n:PROPERTIES:\n:NOTION_DISCUSSION_ID: abc\n:END:\n- *Alice*: hello\n")
-         (stripped (notion-bridge-sync--strip-comments-section org-text)))
-    (should (string-match-p "Some content" stripped))
-    (should-not (string-match-p "NOTION_COMMENTS" stripped))
-    (should-not (string-match-p "Alice" stripped))))
-
-(ert-deftest notion-bridge-sync-test-strip-preserves-content ()
-  "Stripping comments preserves all other content."
-  (let* ((org-text "#+TITLE: Test\n\n- [ ] Task one\n* Heading\nParagraph\n")
-         (stripped (notion-bridge-sync--strip-comments-section org-text)))
-    (should (equal stripped org-text))))
 
 ;;; ============================================================
 ;;; Comment serialization
@@ -139,29 +105,6 @@
 ;;; ============================================================
 ;;; Conflict detection
 ;;; ============================================================
-
-(ert-deftest notion-bridge-sync-test-conflict-detected ()
-  "Conflict check should error when remote has changed and user declines."
-  (let ((notion-bridge-api-token "test-token")
-        (notion-bridge--last-edited "2026-01-01T00:00:00Z"))
-    (cl-letf (((symbol-function 'call-process)
-               (lambda (_prog _in _dest _display &rest _args)
-                 (insert "{\"last_edited_time\":\"2026-01-02T00:00:00Z\"}\n200")
-                 0))
-              ((symbol-function 'yes-or-no-p) (lambda (_prompt) nil)))
-      (should-error (notion-bridge-sync--check-conflicts "page-id")
-                    :type 'user-error))))
-
-(ert-deftest notion-bridge-sync-test-no-conflict ()
-  "No conflict when remote last-edited matches local."
-  (let ((notion-bridge-api-token "test-token")
-        (notion-bridge--last-edited "2026-01-01T00:00:00Z"))
-    (cl-letf (((symbol-function 'call-process)
-               (lambda (_prog _in _dest _display &rest _args)
-                 (insert "{\"last_edited_time\":\"2026-01-01T00:00:00Z\"}\n200")
-                 0)))
-      ;; Should not error
-      (notion-bridge-sync--check-conflicts "page-id"))))
 
 ;;; ============================================================
 ;;; Comment serialization with mixed parent types
@@ -217,20 +160,6 @@
 ;;; ============================================================
 ;;; Strip comments with no comments section (identity)
 ;;; ============================================================
-
-(ert-deftest notion-bridge-sync-test-strip-no-comments-identity ()
-  "Stripping from text with no comments section returns identical text."
-  (let ((text "#+TITLE: Test\n\nSome body text\n* Heading\nMore content\n"))
-    (should (equal (notion-bridge-sync--strip-comments-section text) text))))
-
-(ert-deftest notion-bridge-sync-test-strip-empty-string ()
-  "Stripping from empty string returns empty string."
-  (should (equal (notion-bridge-sync--strip-comments-section "") "")))
-
-(ert-deftest notion-bridge-sync-test-strip-only-keywords ()
-  "Stripping from text with only keywords returns identical text."
-  (let ((text "#+TITLE: T\n#+NOTION_PAGE_ID: x\n"))
-    (should (equal (notion-bridge-sync--strip-comments-section text) text))))
 
 ;;; ============================================================
 ;;; Slugify edge cases
